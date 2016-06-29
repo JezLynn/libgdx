@@ -34,6 +34,8 @@ import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.Clipboard;
 import com.badlogic.gdx.utils.ObjectMap;
 import com.badlogic.gdx.utils.TimeUtils;
+import com.google.gwt.animation.client.AnimationScheduler;
+import com.google.gwt.animation.client.AnimationScheduler.AnimationCallback;
 import com.google.gwt.core.client.EntryPoint;
 import com.google.gwt.core.client.GWT;
 import com.google.gwt.core.client.JavaScriptObject;
@@ -42,7 +44,6 @@ import com.google.gwt.dom.client.Document;
 import com.google.gwt.dom.client.Element;
 import com.google.gwt.dom.client.Style;
 import com.google.gwt.dom.client.Style.Unit;
-import com.google.gwt.user.client.Timer;
 import com.google.gwt.user.client.ui.HasHorizontalAlignment;
 import com.google.gwt.user.client.ui.HasVerticalAlignment;
 import com.google.gwt.user.client.ui.Image;
@@ -55,13 +56,13 @@ import com.google.gwt.user.client.ui.TextArea;
 import com.google.gwt.user.client.ui.VerticalPanel;
 
 /** Implementation of an {@link Application} based on GWT. Clients have to override {@link #getConfig()} and
- * {@link #getApplicationListener()}. Clients can override the default loading screen via
+ * {@link #createApplicationListener()}. Clients can override the default loading screen via
  * {@link #getPreloaderCallback()} and implement any loading screen drawing via GWT widgets.
  * @author mzechner */
 public abstract class GwtApplication implements EntryPoint, Application {
 	private ApplicationListener listener;
-	private GwtApplicationConfiguration config;
-	private GwtGraphics graphics;
+	GwtApplicationConfiguration config;
+	GwtGraphics graphics;
 	private GwtInput input;
 	private GwtNet net;
 	private Panel root = null;
@@ -88,11 +89,20 @@ public abstract class GwtApplication implements EntryPoint, Application {
 	}
 	
 	@Override
+	public ApplicationListener getApplicationListener() {
+		return listener;
+	}
+	
+	public abstract ApplicationListener createApplicationListener();
+	
+	@Override
 	public void onModuleLoad () {
 		GwtApplication.agentInfo = computeAgentInfo();
-		this.listener = getApplicationListener();
+		this.listener = createApplicationListener();
 		this.config = getConfig();
 		this.log = config.log;
+
+		addEventListeners();
 
 		if (config.rootPanel != null) {
 			this.root = config.rootPanel;
@@ -188,18 +198,18 @@ public abstract class GwtApplication implements EntryPoint, Application {
 			throw new RuntimeException(t);
 		}
 
-		// setup rendering timer
-		new Timer() {
+		AnimationScheduler.get().requestAnimationFrame(new AnimationCallback() {
 			@Override
-			public void run () {
+			public void execute (double timestamp) {
 				try {
 					mainLoop();
 				} catch (Throwable t) {
 					error("GwtApplication", "exception: " + t.getMessage(), t);
 					throw new RuntimeException(t);
 				}
+				AnimationScheduler.get().requestAnimationFrame(this, graphics.canvas);
 			}
-		}.scheduleRepeating((int)((1f / config.fps) * 1000));
+		}, graphics.canvas);
 	}
 
 	void mainLoop() {
@@ -215,9 +225,10 @@ public abstract class GwtApplication implements EntryPoint, Application {
 		for (int i = 0; i < runnablesHelper.size; i++) {
 			runnablesHelper.get(i).run();
 		}
-		runnablesHelper.clear();					
+		runnablesHelper.clear();
+		graphics.frameId++;
 		listener.render();
-		input.justTouched = false;
+		input.reset();
 	}
 	
 	public Panel getRootPanel () {
@@ -308,7 +319,7 @@ public abstract class GwtApplication implements EntryPoint, Application {
 	public void log (String tag, String message, Throwable exception) {
 		if (logLevel >= LOG_INFO) {
 			checkLogLabel();
-			log.setText(log.getText() + "\n" + tag + ": " + message + "\n" + exception.getMessage() + "\n");
+			log.setText(log.getText() + "\n" + tag + ": " + message + "\n" + getMessages(exception) + "\n");
 			log.setCursorPos(log.getText().length() - 1);
 			System.out.println(tag + ": " + message + "\n" + exception.getMessage());
 			System.out.println(getStackTrace(exception));
@@ -319,7 +330,7 @@ public abstract class GwtApplication implements EntryPoint, Application {
 	public void error (String tag, String message) {
 		if (logLevel >= LOG_ERROR) {
 			checkLogLabel();
-			log.setText(log.getText() + "\n" + tag + ": " + message);
+			log.setText(log.getText() + "\n" + tag + ": " + message + "\n");
 			log.setCursorPos(log.getText().length() - 1);
 			System.err.println(tag + ": " + message);
 		}
@@ -329,7 +340,7 @@ public abstract class GwtApplication implements EntryPoint, Application {
 	public void error (String tag, String message, Throwable exception) {
 		if (logLevel >= LOG_ERROR) {
 			checkLogLabel();
-			log.setText(log.getText() + "\n" + tag + ": " + message + "\n" + exception.getMessage());
+			log.setText(log.getText() + "\n" + tag + ": " + message + "\n" + getMessages(exception) + "\n");
 			log.setCursorPos(log.getText().length() - 1);
 			System.err.println(tag + ": " + message + "\n" + exception.getMessage() + "\n");
 			System.out.println(getStackTrace(exception));
@@ -350,13 +361,22 @@ public abstract class GwtApplication implements EntryPoint, Application {
 	public void debug (String tag, String message, Throwable exception) {
 		if (logLevel >= LOG_DEBUG) {
 			checkLogLabel();
-			log.setText(log.getText() + "\n" + tag + ": " + message + "\n" + exception.getMessage() + "\n");
+			log.setText(log.getText() + "\n" + tag + ": " + message + "\n" + getMessages(exception) + "\n");
 			log.setCursorPos(log.getText().length() - 1);
 			System.out.println(tag + ": " + message + "\n" + exception.getMessage());
 			System.out.println(getStackTrace(exception));
 		}
 	}
-
+	
+	private String getMessages (Throwable e) {
+		StringBuffer buffer = new StringBuffer();
+		while (e != null) {
+			buffer.append(e.getMessage() + "\n");
+			e = e.getCause();
+		}
+		return buffer.toString();
+	}
+	
 	private String getStackTrace (Throwable e) {
 		StringBuffer buffer = new StringBuffer();
 		for (StackTraceElement trace : e.getStackTrace()) {
@@ -517,6 +537,27 @@ public abstract class GwtApplication implements EntryPoint, Application {
 	native static public void consoleLog(String message) /*-{
 		console.log( "GWT: " + message );
 	}-*/;
+	
+	private native void addEventListeners () /*-{
+		var self = this;
+		$doc.addEventListener('visibilitychange', function (e) {
+			self.@com.badlogic.gdx.backends.gwt.GwtApplication::onVisibilityChange(Z)($doc['hidden'] !== true);
+		});
+	}-*/;
+
+	private void onVisibilityChange (boolean visible) {
+		if (visible) {
+			for (LifecycleListener listener : lifecycleListeners) {
+				listener.resume();
+			}
+			listener.resume();
+		} else {
+			for (LifecycleListener listener : lifecycleListeners) {
+				listener.pause();
+			}
+			listener.pause();
+		}
+	}
 	
 	/**
 	 * LoadingListener interface main purpose is to do some things before or after {@link GwtApplication#setupLoop()}
